@@ -445,12 +445,57 @@ def _build_markdown_post_payload(content: str) -> str:
     return json.dumps({"zh_cn": {"content": rows}}, ensure_ascii=False)
 
 
+# ===== HERMES-LOCAL-PATCH feishu-indent BEGIN =====
+# Rewrites leading half-width indentation to U+3000 so Feishu's mobile post
+# renderer never sees an indented code block (which makes it swallow all
+# following content).  Fenced-block bodies are preserved verbatim.
+# Remove with: ~/.hermes/scripts/feishu-indent-patch.py remove
+_HLP_INDENT_RE = re.compile(r"^([ \t]+)(?=\S)")
+
+
+def _hlp_sanitize_indent(content: str) -> str:
+    if not content:
+        return content
+    out = []
+    in_fence = False
+    for raw in content.splitlines():
+        stripped = raw.strip()
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped)
+            if in_fence
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped)
+        )
+        if is_fence:
+            in_fence = not in_fence
+            out.append(raw)
+            continue
+        if in_fence:
+            out.append(raw)
+            continue
+        m = _HLP_INDENT_RE.match(raw)
+        if m:
+            lead = m.group(1)
+            width = sum(4 if ch == "\t" else 1 for ch in lead)
+            if width >= 4:
+                raw = (
+                    "\u3000" * (width // 2)
+                    + " " * (width % 2)
+                    + raw[len(lead):]
+                )
+        out.append(raw)
+    return "\n".join(out)
+
+
+# ===== HERMES-LOCAL-PATCH feishu-indent END =====
+
+
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """Build Feishu post rows, giving each fenced code block its own row.
 
     Feishu's `md` renderer can swallow trailing content when a fence sits inside one
     large element; splitting at real fence lines keeps surrounding prose visible.
     """
+    content = _hlp_sanitize_indent(content)  # HERMES-LOCAL-PATCH feishu-indent CALL
     if not content:
         return [[{"tag": "md", "text": ""}]]
     if "```" not in content:
